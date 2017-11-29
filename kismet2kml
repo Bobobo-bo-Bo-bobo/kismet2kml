@@ -12,6 +12,9 @@ import time
 
 __DEBUG = False
 
+# illegal BSSID values
+illegal_bssid = set("00:00:00:00:00:00")
+
 
 def read_file(f):
     """
@@ -158,28 +161,34 @@ def extract_data(xml, pres=None):
             if essid is None:
                 if __DEBUG:
                     print("%s: ESSID is None" % (bssid, ))
-                continue
+            else:
+                result[bssid] = {
+                    "ESSID": essid,
+                    "time": last_time,
+                    "position": [lat, lon, alt],
+                    "encryption": encryption,
+                }
 
-            result[bssid] = {"ESSID": essid, "time": last_time, "position": [lat, lon, alt]}
-            if __DEBUG:
-                print("%s: ESSID: %s at (%f, %f, %f) stamp %f - %s"
-                      % (bssid, essid, lat, lon, alt, last_time, str(encryption)))
+                if __DEBUG:
+                    print("%s: ESSID: %s at (%f, %f, %f) stamp %f - %s"
+                          % (bssid, essid, lat, lon, alt, last_time, str(encryption)))
         else:
-            if result[bssid]["ESSID"] != essid:
-                if last_time > result[bssid]["time"]:
-                    if __DEBUG:
-                        print("%s changed ESSID %s -> %s" % (bssid, result[bssid]["ESSID"], essid))
-                    result[bssid]["ESSID"] = essid
-                    result[bssid]["time"] = last_time
+            if essid is not None:
+                if result[bssid]["ESSID"] != essid:
+                    if last_time > result[bssid]["time"]:
+                        if __DEBUG:
+                            print("%s changed ESSID %s -> %s" % (bssid, result[bssid]["ESSID"], essid))
+                        result[bssid]["ESSID"] = essid
+                        result[bssid]["time"] = last_time
 
-            pos = result[bssid]["position"]
-            # XXX: although it is incorrect to calculate the average of lat/lon (they are WGS84 based
-            # spherical coordinages!) it is sufficient for very small differences
-            pos[0] = (pos[0] + lat) / 2.0
-            pos[1] = (pos[1] + lon) / 2.0
-            pos[2] = (pos[2] + alt) / 2.0
+                pos = result[bssid]["position"]
+                # XXX: although it is incorrect to calculate the average of lat/lon (they are WGS84 based
+                # spherical coordinages!) it is sufficient for very small differences
+                pos[0] = (pos[0] + lat) / 2.0
+                pos[1] = (pos[1] + lon) / 2.0
+                pos[2] = (pos[2] + alt) / 2.0
 
-            result[bssid]["position"] = pos
+                result[bssid]["position"] = pos
 
     return result
 
@@ -207,6 +216,11 @@ if __name__ == "__main__":
 
         parsed_xml = parse_content(raw_xml)
         parsed = extract_data(parsed_xml, parsed)
+
+    # remove illegal BSSIDs
+    for ill in illegal_bssid:
+        if ill in parsed:
+            parsed.pop(ill)
 
     bssids = list(parsed.keys())
     bssids.sort()
