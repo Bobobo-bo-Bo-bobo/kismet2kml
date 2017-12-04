@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """Convert Kismet netxml files to GoogleEarth KML files"""
 
+import getopt
 import gzip
 import lxml
 import lxml.etree
@@ -16,11 +17,12 @@ __DEBUG = False
 # illegal BSSID values
 illegal_bssid = ["00:00:00:00:00:00"]
 
-enc2bit = {
-    "WEP": 1,
-    "WPA": 2,
-    "WPA2": 3,
-}
+short_options = "Dhe:"
+long_options = [
+    "debug",
+    "encryption=",
+    "help",
+]
 
 
 def read_file(f):
@@ -107,10 +109,10 @@ def get_encryption(e):
     return "unknown"
 
 
-def extract_data(xml, pres=None):
+def extract_data(pxml, pres=None):
     """
     Extract AP data from parsed XML
-    :param xml: parsed XML
+    :param pxml: parsed XML
     :param pres: result dict
     :return: dictionary or None on error
     """
@@ -119,12 +121,12 @@ def extract_data(xml, pres=None):
     else:
         result = pres
 
-    wireless = xml.xpath("/detection-run/wireless-network")
+    wireless = pxml.xpath("/detection-run/wireless-network")
     for w in wireless:
         bssidl = w.xpath("BSSID")
         if len(bssidl) == 0:
             if __DEBUG:
-                print("No BSSID found, skipping")
+                sys.stderr.write("No BSSID found, skipping\n")
             continue
 
         if len(bssidl) > 1:
@@ -138,7 +140,7 @@ def extract_data(xml, pres=None):
         ssidl = w.xpath("SSID")
         if len(ssidl) == 0:
             if __DEBUG:
-                print("%s: No SSID found, skipping" % (bssid, ))
+                sys.stderr.write("%s: No SSID found, skipping\n" % (bssid, ))
             continue
 
         else:
@@ -149,7 +151,7 @@ def extract_data(xml, pres=None):
                 essidl = ssid.xpath("essid")
                 if len(essidl) == 0:
                     if __DEBUG:
-                        print("%s: No ESSID found, skipping" % (bssid, ))
+                        sys.stderr.write("%s: No ESSID found, skipping\n" % (bssid, ))
                     continue
 
                 if len(essidl) > 1:
@@ -163,7 +165,7 @@ def extract_data(xml, pres=None):
         gpsl = w.xpath("gps-info")
         if len(gpsl) == 0:
             if __DEBUG:
-                print("%s: No GPS data, skipping" % (bssid, ))
+                sys.stderr.write("%s: No GPS data, skipping\n" % (bssid, ))
             continue
 
         if len(gpsl) > 1:
@@ -190,7 +192,7 @@ def extract_data(xml, pres=None):
         if bssid not in result:
             if essid is None:
                 if __DEBUG:
-                    print("%s: ESSID is None" % (bssid, ))
+                    sys.stderr.write("%s: ESSID is None\n" % (bssid, ))
             else:
                 result[bssid] = {
                     "ESSID": essid,
@@ -200,14 +202,15 @@ def extract_data(xml, pres=None):
                 }
 
                 if __DEBUG:
-                    print("%s: ESSID: %s at (%f, %f, %f) stamp %f - %s"
-                          % (bssid, essid, lat, lon, alt, last_time, str(encryption)))
+                    sys.stderr.write("%s: ESSID: %s at (%f, %f, %f) stamp %f - %s\n"
+                                     % (bssid, essid, lat, lon, alt, last_time, str(encryption)))
         else:
             if essid is not None:
                 if result[bssid]["ESSID"] != essid:
                     if last_time > result[bssid]["time"]:
                         if __DEBUG:
-                            print("%s changed ESSID %s -> %s" % (bssid, result[bssid]["ESSID"], essid))
+                            sys.stderr.write("%s changed ESSID %s -> %s\n" % (bssid, result[bssid]["ESSID"], essid))
+
                         result[bssid]["ESSID"] = essid
                         result[bssid]["time"] = last_time
 
@@ -228,16 +231,24 @@ def usage():
     Show usage
     :return: None
     """
-    print("""Usage: %s <file> [<file> <file>]""" % (sys.argv[0], ))
+    print("""Usage: %s [-h|--help] [-e <enc>|--encryption=<enc>] <file> [<file> <file>]
+
+    -e <enc>            Komma separated list of encryptions to include in output.
+    --encryption=<enc>  Can be one of: Open, WEP, WPA, WPA2, WPA2Enterprise, Unknown
+
+    -h                  This text.
+    --help
+
+""" % (sys.argv[0], ))
 
 
-def make_kml(p):
+def make_kml(p, output_enc=None):
     """
     Create KML from parsed content
     :param p: parsed content
+    :param output_enc: list of encryptions, default is None (all encryption types)
     :return: KML as string
     """
-
     result = """<?xml version="1.0" encoding="UTF-8"?>
     <kml xmlns="http://www.opengis.net/kml/2.2">
     <Document>
@@ -286,6 +297,11 @@ def make_kml(p):
     """
 
     for bssid in p:
+        enc = get_encryption(p[bssid]["encryption"])
+        if output_enc is not None:
+            if enc.lower() not in output_enc:
+                continue
+
         placemark = xml.dom.minidom.Element("Placemark")
         name = xml.dom.minidom.Element("name")
         description = xml.dom.minidom.Element("description")
@@ -324,7 +340,7 @@ def make_kml(p):
 
         style = xml.dom.minidom.Element("styleUrl")
         stext = xml.dom.minidom.Text()
-        stext.data = get_encryption(p[bssid]["encryption"])
+        stext.data = enc
 
         coord.appendChild(ctext)
         description.appendChild(dtext)
@@ -346,12 +362,29 @@ def make_kml(p):
 
 if __name__ == "__main__":
     parsed = {}
+    encryption = None
 
-    if len(sys.argv) == 1:
+    try:
+        options, arguments = getopt.getopt(sys.argv[1:], short_options, long_options)
+    except getopt.GetoptError:
+        sys.stderr.write("Error: Can't parse options\n")
         usage()
         sys.exit(1)
 
-    for infile in sys.argv[1:]:
+    for opt, arg in options:
+        if opt in ("-h", "--help"):
+            usage()
+            sys.exit(0)
+        elif opt in ("-e", "--encryption"):
+            encryption = arg.lower().split(",")
+        elif opt in ("-D", "--debug"):
+            __DEBUG = True
+        else:
+            sys.stderr.write("Error: Invalid argument %s\n" % (opt, ))
+            usage()
+            sys.exit(1)
+
+    for infile in arguments:
         raw_xml = read_file(infile)
         if raw_xml is None:
             sys.stderr.write("Error: Can't read %s\n" % (infile, ))
@@ -362,7 +395,5 @@ if __name__ == "__main__":
 
     bssids = list(parsed.keys())
     bssids.sort()
-#    for bss in bssids:
-#        print("%s: %s %s" % (bss, str(parsed[bss]), get_encryption(parsed[bss]["encryption"])))
-    print(make_kml(parsed))
+    print(make_kml(parsed, output_enc=encryption))
     sys.exit(0)
