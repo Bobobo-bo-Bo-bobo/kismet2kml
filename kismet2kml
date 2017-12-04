@@ -9,11 +9,18 @@ import os
 import os.path
 import sys
 import time
+import xml.dom.minidom
 
 __DEBUG = False
 
 # illegal BSSID values
-illegal_bssid = set("00:00:00:00:00:00")
+illegal_bssid = ["00:00:00:00:00:00"]
+
+enc2bit = {
+    "WEP": 1,
+    "WPA": 2,
+    "WPA2": 3,
+}
 
 
 def read_file(f):
@@ -80,6 +87,26 @@ def map_key_value_list(k, v):
     return result
 
 
+def get_encryption(e):
+    """
+    Get WLAN encryption
+    :param e: list of announced encryption
+    :return: encryption
+    """
+    if "None" in e:
+        return "open"
+    elif "WEP" in e or "WEP40" in e or "WEP104" in e:
+        return "wep"
+    elif "WPA+TKIP" in e and "WPA+PSK" in e:
+        return "wpa"
+    elif "WPA+AES-CCM" in e and "WPA+TKIP" not in e and "WPA+PSK" in e:
+        return "wpa2"
+    elif "WPA+PSK" not in e:
+        return "wpa2enterprise"
+
+    return "unknown"
+
+
 def extract_data(xml, pres=None):
     """
     Extract AP data from parsed XML
@@ -105,6 +132,9 @@ def extract_data(xml, pres=None):
             sys.exit(99)
 
         bssid = bssidl[0].text
+        if bssid in illegal_bssid:
+            continue
+
         ssidl = w.xpath("SSID")
         if len(ssidl) == 0:
             if __DEBUG:
@@ -201,6 +231,119 @@ def usage():
     print("""Usage: %s <file> [<file> <file>]""" % (sys.argv[0], ))
 
 
+def make_kml(p):
+    """
+    Create KML from parsed content
+    :param p: parsed content
+    :return: KML as string
+    """
+
+    result = """<?xml version="1.0" encoding="UTF-8"?>
+    <kml xmlns="http://www.opengis.net/kml/2.2">
+    <Document>
+    <Style id="open">
+        <IconStyle>
+            <Icon>
+                <href>icons/open.png</href>
+            </Icon>
+        </IconStyle>
+    </Style>
+    <Style id="wep">
+        <IconStyle>
+            <Icon>
+                <href>icons/wep.png</href>
+            </Icon>
+        </IconStyle>
+    </Style>
+    <Style id="wpa">
+        <IconStyle>
+            <Icon>
+                <href>icons/wpa.png</href>
+            </Icon>
+        </IconStyle>
+    </Style>
+    <Style id="wpa2">
+        <IconStyle>
+            <Icon>
+                <href>icons/wpa2.png</href>
+            </Icon>
+        </IconStyle>
+    </Style>
+    <Style id="wpa2enterprise">
+        <IconStyle>
+            <Icon>
+                <href>icons/wpa2enterprise.png</href>
+            </Icon>
+        </IconStyle>
+    </Style>
+    <Style id="unknown">
+        <IconStyle>
+            <Icon>
+                <href>icons/unknown.png</href>
+            </Icon>
+        </IconStyle>
+    </Style>
+    """
+
+    for bssid in p:
+        placemark = xml.dom.minidom.Element("Placemark")
+        name = xml.dom.minidom.Element("name")
+        description = xml.dom.minidom.Element("description")
+        point = xml.dom.minidom.Element("Point")
+        coord = xml.dom.minidom.Element("coordinates")
+
+        # name is SSID
+        ntext = xml.dom.minidom.Text()
+        ntext.data = p[bssid]["ESSID"]
+
+        # coordinates
+        ctext = xml.dom.minidom.Text()
+        ctext.data = "%s,%s" % (p[bssid]["position"][1], p[bssid]["position"][0])
+
+        # description
+        dtext = xml.dom.minidom.Text()
+        dtext.data = """<table style="width:100%%">
+    <tr>
+        <th><b>SSID</b></th>
+        <th>%s</th>
+    </tr>
+    <tr>
+        <td><b>BSSID</b></td>
+        <td>%s</td>
+    </tr>
+    <tr>
+        <td><b>Encryption</b></td>
+        <td><b>%s</b></td>
+    </tr>
+    <tr>
+        <td><b>Seen</b></td>
+        <td>%s</td>
+    </tr>
+</table>""" % (p[bssid]["ESSID"], bssid, ", ".join(p[bssid]["encryption"]),
+               time.strftime("%a, %d %b %Y %H:%M:%S %z", time.localtime(p[bssid]["time"])))
+
+        style = xml.dom.minidom.Element("styleUrl")
+        stext = xml.dom.minidom.Text()
+        stext.data = get_encryption(p[bssid]["encryption"])
+
+        coord.appendChild(ctext)
+        description.appendChild(dtext)
+        name.appendChild(ntext)
+        point.appendChild(coord)
+        style.appendChild(stext)
+
+        placemark.appendChild(style)
+        placemark.appendChild(name)
+        placemark.appendChild(description)
+        placemark.appendChild(point)
+
+        result += placemark.toxml()
+    result += """    </Document>
+</kml>"""
+
+    return result
+
+
 if __name__ == "__main__":
     parsed = {}
 
@@ -217,15 +360,9 @@ if __name__ == "__main__":
         parsed_xml = parse_content(raw_xml)
         parsed = extract_data(parsed_xml, parsed)
 
-    # remove illegal BSSIDs
-    for ill in illegal_bssid:
-        if ill in parsed:
-            parsed.pop(ill)
-
     bssids = list(parsed.keys())
     bssids.sort()
-    for bss in bssids:
-        print("%s: %s" % (bss, str(parsed[bss])))
-
-#    print(parsed)
+#    for bss in bssids:
+#        print("%s: %s %s" % (bss, str(parsed[bss]), get_encryption(parsed[bss]["encryption"])))
+    print(make_kml(parsed))
     sys.exit(0)
